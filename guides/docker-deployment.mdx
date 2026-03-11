@@ -1,0 +1,444 @@
+---
+title: Docker Deployment
+description: Deploy Template API Rust with Docker and Docker Compose
+---
+
+Template API Rust includes a production-ready multi-stage Dockerfile and Docker Compose configuration for easy deployment.
+
+## Quick Start
+
+Deploy with Docker Compose:
+
+<Steps>
+  <Step title="Configure environment">
+    ```bash
+    cp .env.example .env
+    # Edit .env with your DATABASE_URL
+    ```
+  </Step>
+
+  <Step title="Build and run">
+    ```bash
+    docker compose up --build
+    ```
+  </Step>
+
+  <Step title="Verify">
+    ```bash
+    curl http://localhost:3000/cities
+    ```
+  </Step>
+</Steps>
+
+## Dockerfile Explained
+
+The project uses a multi-stage build for optimized image size:
+
+```dockerfile Dockerfile
+FROM rust:1.83-alpine AS builder
+
+# Build dependencies
+RUN apk add --no-cache \
+    musl-dev \
+    openssl-dev \
+    pkgconfig
+
+# Allow dynamic linking with OpenSSL (avoid static linking errors)
+ENV RUSTFLAGS="-C target-feature=-crt-static"
+
+WORKDIR /app
+
+# Cache dependencies
+COPY Cargo.toml Cargo.lock ./
+
+# Create src with dummy main.rs
+RUN mkdir -p src && \
+    echo 'fn main() { println!("Cache dummy"); }' > src/main.rs
+
+# Build dummy (caches dependencies)
+RUN cargo build --release
+
+# Remove only the dummy main.rs
+RRM -f src/main.rs
+
+# Copy real code
+COPY src/ ./src/
+
+# Force recompilation of actual binary
+RUN rm -rf target/release
+
+# Final build
+RUN cargo build --release
+
+# Clean Cargo cache
+RUN rm -rf /usr/local/cargo/registry /usr/local/cargo/git
+
+# Final stage: minimal image
+FROM alpine:latest
+
+# Runtime dependencies (OpenSSL + libgcc for unwinding)
+RUN apk add --no-cache \
+    ca-certificates \
+    openssl \
+    libgcc
+
+WORKDIR /app
+
+# Copy the real binary
+COPY --from=builder /app/target/release/template_api_rust /usr/local/bin/template_api_rust
+
+CMD ["/usr/local/bin/template_api_rust"]
+```
+
+### Stage 1: Builder
+
+**Base image:** `rust:1.83-alpine`
+- Minimal Alpine Linux with Rust toolchain
+- Small base size for faster builds
+
+**Dependencies caching:**
+```dockerfile
+# Cache dependencies by building dummy project first
+COPY Cargo.toml Cargo.lock ./
+RUN mkdir -p src && echo 'fn main() { println!("Cache dummy"); }' > src/main.rs
+RUN cargo build --release
+```
+
+This caches dependency compilation. Subsequent builds only recompile your code, not dependencies.
+
+<Tip>
+  Dependency caching can reduce build times from 10+ minutes to under 1 minute for code-only changes.
+</Tip>
+
+**Dynamic linking:**
+```dockerfile
+ENV RUSTFLAGS="-C target-feature=-crt-static"
+```
+
+Allows dynamic linking with OpenSSL to avoid complex static linking issues.
+
+### Stage 2: Runtime
+
+**Base image:** `alpine:latest`
+- Minimal runtime image (~5MB base)
+- Only includes what's needed to run the binary
+
+**Runtime dependencies:**
+```dockerfile
+RUN apk add --no-cache \
+    ca-certificates \
+    openssl \
+    libgcc
+```
+
+- `ca-certificates` - SSL certificate validation
+- `openssl` - TLS connections to database
+- `libgcc` - Stack unwinding for Rust panics
+
+**Final image size:** ~30-40MB (vs 1GB+ with builder stage)
+
+## Docker Compose
+
+The `docker-compose.yml` defines the service:
+
+```yaml docker-compose.yml
+services:
+  api:
+    build: .
+    container_name: template_api_rust
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    restart: unless-stopped
+```
+
+### Key configuration:
+
+- **build: .** - Build from Dockerfile in current directory
+- **ports** - Map container port 3000 to host port 3000
+- **env_file** - Load environment variables from `.env`
+- **restart** - Auto-restart container unless manually stopped
+
+## Optional Local Database
+
+For local development, you can uncomment the PostgreSQL service:
+
+```yaml docker-compose.yml
+services:
+  api:
+    build: .
+    container_name: template_api_rust
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    depends_on:
+      - db
+    networks:
+      - app_network
+    restart: unless-stopped
+
+  db:
+    image: postgres:16-alpine
+    container_name: template_postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: template
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    networks:
+      - app_network
+
+volumes:
+  postgres_data:
+
+networks:
+  app_network:
+    driver: bridge
+```
+
+Update your `.env` to use the local database:
+
+```bash .env
+DATABASE_URL=postgresql://postgres:postgres@db:5432/template?sslmode=disable
+```
+
+<Note>
+  Use the service name `db` as the host when connecting from the `api` container within the same Docker Compose network.
+</Note>
+
+## Deployment Options
+
+### Docker Run
+
+Build and run manually:
+
+```bash
+# Build image
+docker build -t template-api-rust .
+
+# Run container
+docker run --rm -p 3000:3000 --env-file .env template-api-rust
+```
+
+### Detached Mode
+
+Run in background:
+
+```bash
+docker compose up -d
+```
+
+View logs:
+
+```bash
+docker compose logs -f api
+```
+
+Stop and remove:
+
+```bash
+docker compose down
+```
+
+### Production Deployment
+
+For production environments:
+
+<Steps>
+  <Step title="Build for production">
+    ```bash
+    docker build -t your-registry/template-api-rust:latest .
+    ```
+  </Step>
+
+  <Step title="Push to registry">
+    ```bash
+    docker push your-registry/template-api-rust:latest
+    ```
+  </Step>
+
+  <Step title="Deploy on server">
+    ```bash
+    docker pull your-registry/template-api-rust:latest
+    docker run -d \
+      -p 3000:3000 \
+      -e DATABASE_URL="postgresql://..." \
+      -e RUST_LOG=info \
+      --restart unless-stopped \
+      --name template-api \
+      your-registry/template-api-rust:latest
+    ```
+  </Step>
+</Steps>
+
+## Cloud Platform Deployment
+
+### AWS Elastic Container Service (ECS)
+
+1. Push image to ECR:
+   ```bash
+   aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin [ACCOUNT].dkr.ecr.us-east-1.amazonaws.com
+   docker tag template-api-rust:latest [ACCOUNT].dkr.ecr.us-east-1.amazonaws.com/template-api-rust:latest
+   docker push [ACCOUNT].dkr.ecr.us-east-1.amazonaws.com/template-api-rust:latest
+   ```
+
+2. Create ECS task definition with environment variables
+3. Deploy to ECS Fargate or EC2
+
+### Google Cloud Run
+
+```bash
+# Build and push to GCR
+gcloud builds submit --tag gcr.io/[PROJECT-ID]/template-api-rust
+
+# Deploy to Cloud Run
+gcloud run deploy template-api-rust \
+  --image gcr.io/[PROJECT-ID]/template-api-rust \
+  --platform managed \
+  --region us-central1 \
+  --set-env-vars DATABASE_URL="postgresql://..."
+```
+
+### Azure Container Instances
+
+```bash
+# Push to Azure Container Registry
+az acr build --registry [REGISTRY] --image template-api-rust:latest .
+
+# Deploy to ACI
+az container create \
+  --resource-group [GROUP] \
+  --name template-api-rust \
+  --image [REGISTRY].azurecr.io/template-api-rust:latest \
+  --dns-name-label template-api \
+  --ports 3000 \
+  --environment-variables DATABASE_URL="postgresql://..."
+```
+
+### DigitalOcean App Platform
+
+1. Connect GitHub repository
+2. Configure build from Dockerfile
+3. Set environment variables in dashboard
+4. Deploy automatically on push
+
+## Health Checks
+
+Add a health check endpoint for container orchestration:
+
+```rust src/controllers/health_controller.rs
+use axum::{extract::State, http::StatusCode, response::IntoResponse};
+use crate::app_state::AppState;
+
+pub async fn health_check(
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    match sqlx::query("SELECT 1").execute(&state.db).await {
+        Ok(_) => StatusCode::OK,
+        Err(_) => StatusCode::SERVICE_UNAVAILABLE,
+    }
+}
+```
+
+Add route:
+
+```rust src/routes/api.rs
+Router::new()
+    .route("/health", get(health_check))
+    // ...
+```
+
+Docker health check:
+
+```dockerfile Dockerfile
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+  CMD wget --no-verbose --tries=1 --spider http://localhost:3000/health || exit 1
+```
+
+## Best Practices
+
+<AccordionGroup>
+  <Accordion title="Use multi-stage builds">
+    Always use multi-stage builds to minimize final image size. Include only runtime dependencies in the final stage.
+  </Accordion>
+
+  <Accordion title="Don't run as root">
+    Add a non-root user in the Dockerfile:
+
+    ```dockerfile
+    FROM alpine:latest
+    RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+    USER appuser
+    # ...
+    ```
+  </Accordion>
+
+  <Accordion title="Cache dependencies properly">
+    Copy `Cargo.toml` and `Cargo.lock` before source code to leverage Docker layer caching.
+  </Accordion>
+
+  <Accordion title="Use specific image tags">
+    Pin specific versions (`rust:1.83-alpine`) instead of `latest` for reproducible builds.
+  </Accordion>
+
+  <Accordion title="Set resource limits">
+    Specify CPU and memory limits in Docker Compose or orchestration platform:
+
+    ```yaml
+    services:
+      api:
+        deploy:
+          resources:
+            limits:
+              cpus: '1'
+              memory: 512M
+    ```
+  </Accordion>
+
+  <Accordion title="Implement graceful shutdown">
+    Handle SIGTERM signals for clean shutdown when container stops.
+  </Accordion>
+</AccordionGroup>
+
+## Troubleshooting
+
+### Build fails with OpenSSL errors
+
+**Solution:** Ensure `RUSTFLAGS="-C target-feature=-crt-static"` is set and `openssl-dev` is installed.
+
+### Container exits immediately
+
+**Solution:** Check logs:
+```bash
+docker compose logs api
+```
+
+Common causes: missing `DATABASE_URL`, database connection failure.
+
+### Can't connect to database from container
+
+**Solution:** 
+- Use `host.docker.internal` instead of `localhost` (Mac/Windows)
+- Use service name in Docker Compose networks
+- Check firewall/security group rules
+
+### Image size too large
+
+**Solution:** Verify multi-stage build is working. Final image should be ~30-40MB. Check if builder artifacts are included by mistake.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Environment Setup" icon="gear" href="/guides/environment-setup">
+    Configure environment variables for deployment
+  </Card>
+  <Card title="Adding Resources" icon="plus" href="/guides/adding-resources">
+    Extend your API with new endpoints
+  </Card>
+</CardGroup>

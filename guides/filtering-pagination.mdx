@@ -1,0 +1,479 @@
+---
+title: Filtering & Pagination
+description: Learn how to use query parameters for filtering, sorting, and pagination
+---
+
+Template API Rust provides built-in support for filtering, sorting, and pagination through the `Listable` trait and generic query service.
+
+## Query Parameters
+
+The list endpoints accept query parameters for filtering and pagination:
+
+```bash
+GET /cities?name=madrid&region=Spain&page=1&per_page=10
+```
+
+## Filtering
+
+Filters are defined in the resource struct and implemented via the `Listable` trait.
+
+### Basic Filter Example
+
+Using the `City` resource:
+
+```rust src/resources/city_resource.rs
+use serde::Deserialize;
+
+#[derive(Deserialize, Default)]
+pub struct CityResource {
+    pub name: Option<String>,
+    pub region: Option<String>,
+    pub page: Option<u32>,
+    pub per_page: Option<u32>,
+}
+```
+
+### Implementing Filters
+
+```rust src/models/city.rs
+use crate::repositories::listable::{Listable, FilterOp};
+
+impl Listable for CityResource {
+    const TABLE: &'static str = "cities";
+    const COLUMNS: &'static [&'static str] = &["id", "name", "region"];
+
+    fn filters(&self) -> Vec<(&'static str, FilterOp)> {
+        let mut v = Vec::new();
+
+        if let Some(name) = &self.name {
+            v.push(("name", FilterOp::ILike(name.clone())));
+        }
+
+        if let Some(region) = &self.region {
+            v.push(("region", FilterOp::Eq(region.clone())));
+        }
+
+        v
+    }
+
+    fn page(&self) -> Option<u32> {
+        self.page
+    }
+
+    fn per_page(&self) -> Option<u32> {
+        self.per_page
+    }
+}
+```
+
+## Filter Operations
+
+The `FilterOp` enum defines available filter types:
+
+```rust src/repositories/listable.rs
+pub enum FilterOp {
+    Eq(String),      // Exact match: column = 'value'
+    ILike(String),   // Case-insensitive like: column ILIKE '%value%'
+}
+```
+
+### Eq - Exact Match
+
+Use for exact value matching:
+
+```rust
+if let Some(region) = &self.region {
+    v.push(("region", FilterOp::Eq(region.clone())));
+}
+```
+
+**SQL generated:**
+```sql
+WHERE region = $1
+```
+
+**Example request:**
+```bash
+curl "http://localhost:3000/cities?region=Spain"
+```
+
+### ILike - Case-Insensitive Partial Match
+
+Use for text search:
+
+```rust
+if let Some(name) = &self.name {
+    v.push(("name", FilterOp::ILike(name.clone())));
+}
+```
+
+**SQL generated:**
+```sql
+WHERE name ILIKE '%madrid%'
+```
+
+<Tip>
+  `ILike` automatically wraps the value with `%` wildcards for partial matching.
+</Tip>
+
+**Example request:**
+```bash
+curl "http://localhost:3000/cities?name=mad"
+# Matches: Madrid, Madariaga, etc.
+```
+
+## Multiple Filters
+
+Filters are combined with `AND`:
+
+```bash
+curl "http://localhost:3000/cities?name=barcelona&region=Spain"
+```
+
+**SQL generated:**
+```sql
+SELECT id, name, region FROM cities 
+WHERE name ILIKE '%barcelona%' AND region = 'Spain'
+```
+
+## Sorting
+
+Sorting is configured in the controller:
+
+```rust src/controllers/city_controller.rs
+pub async fn list_cities(
+    State(state): State<AppState>,
+    Query(filter): Query<CityResource>,
+) -> impl IntoResponse {
+    let result = generic_list::<City, CityResource>(
+        filter,
+        Some(("id", "DESC")),  // Sort by id DESC
+        &state.db,
+    ).await;
+    // ...
+}
+```
+
+### Sort Parameters
+
+```rust
+Some(("column_name", "direction"))
+```
+
+- **column_name** - Column to sort by
+- **direction** - `"ASC"` or `"DESC"` (case-insensitive)
+
+**Examples:**
+
+```rust
+Some(("name", "ASC"))        // Sort by name A-Z
+Some(("created_at", "DESC")) // Sort by newest first
+Some(("price", "ASC"))       // Sort by lowest price
+```
+
+<Note>
+  Currently, sorting is defined in code, not via query parameters. To make it dynamic, you'd need to extend the resource struct and parse the sort parameter.
+</Note>
+
+## Pagination
+
+Pagination is controlled by `page` and `per_page` query parameters.
+
+### Basic Pagination
+
+```bash
+curl "http://localhost:3000/cities?page=1&per_page=10"
+```
+
+**SQL generated:**
+```sql
+SELECT id, name, region FROM cities 
+ORDER BY id DESC 
+LIMIT 10 OFFSET 0
+```
+
+### Pagination Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `page` | `u32` | None | Page number (1-indexed) |
+| `per_page` | `u32` | None | Items per page |
+
+<Warning>
+  Both `page` and `per_page` must be provided together. If either is missing, pagination is disabled and **all records** are returned.
+</Warning>
+
+### Pagination Examples
+
+```bash
+# Page 1: items 1-10
+curl "http://localhost:3000/cities?page=1&per_page=10"
+
+# Page 2: items 11-20
+curl "http://localhost:3000/cities?page=2&per_page=10"
+
+# Page 3: items 21-30
+curl "http://localhost:3000/cities?page=3&per_page=10"
+
+# Large page size
+curl "http://localhost:3000/cities?page=1&per_page=100"
+```
+
+### Offset Calculation
+
+The offset is calculated from the page number:
+
+```rust src/services/generic_query.rs
+if let (Some(page), Some(per_page)) = (filter.page(), filter.per_page()) {
+    let offset = (page.saturating_sub(1) * per_page) as i64;
+    query.push_str(&format!(" LIMIT {} OFFSET {}", per_page, offset));
+}
+```
+
+**Formula:** `offset = (page - 1) × per_page`
+
+| Page | Per Page | Offset | Records |
+|------|----------|--------|----------|
+| 1 | 10 | 0 | 1-10 |
+| 2 | 10 | 10 | 11-20 |
+| 3 | 10 | 20 | 21-30 |
+| 1 | 25 | 0 | 1-25 |
+| 2 | 25 | 25 | 26-50 |
+
+## Combining Filters, Sorting, and Pagination
+
+All features work together:
+
+```bash
+curl "http://localhost:3000/cities?name=san&region=USA&page=1&per_page=5"
+```
+
+**Generated SQL:**
+```sql
+SELECT id, name, region FROM cities 
+WHERE name ILIKE '%san%' AND region = 'USA' 
+ORDER BY id DESC 
+LIMIT 5 OFFSET 0
+```
+
+**Response:**
+```json
+{
+  "status": "success",
+  "data": [
+    { "id": 103, "name": "San Francisco", "region": "USA" },
+    { "id": 98, "name": "San Diego", "region": "USA" },
+    { "id": 87, "name": "San Antonio", "region": "USA" },
+    { "id": 76, "name": "San Jose", "region": "USA" },
+    { "id": 54, "name": "Santa Fe", "region": "USA" }
+  ]
+}
+```
+
+## Implementation Details
+
+The `generic_list` function builds dynamic SQL:
+
+```rust src/services/generic_query.rs
+pub async fn generic_list<T, F>(
+    filter: F,
+    order_by: Option<(&'static str, &'static str)>,
+    pool: &Pool<Postgres>,
+) -> Result<Vec<T>, Error>
+where
+    T: for<'r> FromRow<'r, PgRow> + Send + Unpin,
+    F: Listable,
+{
+    let columns = F::COLUMNS.join(", ");
+    let mut query = format!("SELECT {} FROM {}", columns, F::TABLE);
+
+    let filters = filter.filters();
+    let mut bind_index = 1;
+    let mut binds = Vec::new();
+
+    // Build WHERE clause
+    if !filters.is_empty() {
+        query.push_str(" WHERE ");
+
+        for (i, (col, op)) in filters.iter().enumerate() {
+            if i > 0 {
+                query.push_str(" AND ");
+            }
+
+            match op {
+                FilterOp::Eq(val) => {
+                    query.push_str(&format!("{} = ${}", col, bind_index));
+                    binds.push(val.clone());
+                }
+                FilterOp::ILike(val) => {
+                    query.push_str(&format!("{} ILIKE ${}", col, bind_index));
+                    binds.push(format!("%{}%", val));
+                }
+            }
+
+            bind_index += 1;
+        }
+    }
+
+    // Add ORDER BY
+    if let Some((col, dir)) = order_by {
+        let d = if dir.eq_ignore_ascii_case("DESC") { "DESC" } else { "ASC" };
+        query.push_str(&format!(" ORDER BY {} {}", col, d));
+    }
+
+    // Add pagination
+    if let (Some(page), Some(per_page)) = (filter.page(), filter.per_page()) {
+        let offset = (page.saturating_sub(1) * per_page) as i64;
+        query.push_str(&format!(" LIMIT {} OFFSET {}", per_page, offset));
+    }
+
+    let mut q = sqlx::query_as::<_, T>(&query).persistent(false);
+
+    for v in binds {
+        q = q.bind(v);
+    }
+
+    q.fetch_all(pool).await
+}
+```
+
+<Tip>
+  The query is built dynamically and uses parameterized bindings to prevent SQL injection.
+</Tip>
+
+## Best Practices
+
+<AccordionGroup>
+  <Accordion title="Always paginate large datasets">
+    Without pagination, listing endpoints return **all records**, which can cause:
+    - High memory usage
+    - Slow response times
+    - Database load
+
+    Always include `page` and `per_page` for production lists.
+  </Accordion>
+
+  <Accordion title="Set reasonable page size limits">
+    Consider adding max page size validation:
+
+    ```rust
+    fn per_page(&self) -> Option<u32> {
+        self.per_page.map(|p| p.min(100))  // Cap at 100
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="Index filtered columns">
+    Add database indexes on columns used in filters:
+
+    ```sql
+    CREATE INDEX idx_cities_name ON cities(name);
+    CREATE INDEX idx_cities_region ON cities(region);
+    ```
+  </Accordion>
+
+  <Accordion title="Use Eq for exact matches">
+    Use `FilterOp::Eq` for exact matching (IDs, enums, booleans). Reserve `ILike` for text search.
+  </Accordion>
+
+  <Accordion title="Return pagination metadata">
+    Consider adding total count and pagination info:
+
+    ```json
+    {
+      "status": "success",
+      "data": [...],
+      "meta": {
+        "total": 250,
+        "page": 1,
+        "per_page": 10,
+        "total_pages": 25
+      }
+    }
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Advanced: Custom Filter Operations
+
+To add range queries (e.g., price filtering), extend `FilterOp`:
+
+### 1. Add new operations
+
+```rust src/repositories/listable.rs
+pub enum FilterOp {
+    Eq(String),
+    ILike(String),
+    Gt(String),      // Greater than
+    Lt(String),      // Less than
+    Gte(String),     // Greater than or equal
+    Lte(String),     // Less than or equal
+}
+```
+
+### 2. Update generic_list
+
+```rust src/services/generic_query.rs
+match op {
+    FilterOp::Eq(val) => {
+        query.push_str(&format!("{} = ${}", col, bind_index));
+        binds.push(val.clone());
+    }
+    FilterOp::ILike(val) => {
+        query.push_str(&format!("{} ILIKE ${}", col, bind_index));
+        binds.push(format!("%{}%", val));
+    }
+    FilterOp::Gt(val) => {
+        query.push_str(&format!("{} > ${}", col, bind_index));
+        binds.push(val.clone());
+    }
+    FilterOp::Gte(val) => {
+        query.push_str(&format!("{} >= ${}", col, bind_index));
+        binds.push(val.clone());
+    }
+    // ... add Lt, Lte
+}
+```
+
+### 3. Use in resource
+
+```rust
+#[derive(Deserialize, Default)]
+pub struct ProductResource {
+    pub min_price: Option<f64>,
+    pub max_price: Option<f64>,
+    // ...
+}
+
+impl Listable for ProductResource {
+    fn filters(&self) -> Vec<(&'static str, FilterOp)> {
+        let mut v = Vec::new();
+
+        if let Some(min) = self.min_price {
+            v.push(("price", FilterOp::Gte(min.to_string())));
+        }
+
+        if let Some(max) = self.max_price {
+            v.push(("price", FilterOp::Lte(max.to_string())));
+        }
+
+        v
+    }
+}
+```
+
+**Usage:**
+```bash
+curl "http://localhost:3000/products?min_price=100&max_price=500"
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Repository Pattern" icon="database" href="/concepts/repository-pattern">
+    Understand the trait-based query system
+  </Card>
+  <Card title="Adding Resources" icon="plus" href="/guides/adding-resources">
+    Create new resources with custom filters
+  </Card>
+</CardGroup>

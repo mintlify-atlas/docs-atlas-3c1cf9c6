@@ -1,0 +1,205 @@
+---
+title: 'Deletable Trait'
+description: 'Enable DELETE operations for any model'
+---
+
+## Overview
+
+The `Deletable` trait defines the contract for models that can be deleted from the database. It works with the `generic_delete` function to generate type-safe DELETE queries.
+
+## Trait Definition
+
+```rust
+pub trait Deletable {
+    /// Tabla
+    const TABLE: &'static str;
+
+    /// Columna identificadora (normalmente id)
+    const ID_COLUMN: &'static str;
+}
+```
+
+Source: `~/workspace/source/src/repositories/deletable.rs:1-7`
+
+## Associated Constants
+
+<ParamField path="TABLE" type="&'static str" required>
+  The database table name (e.g., `"cities"`)
+</ParamField>
+
+<ParamField path="ID_COLUMN" type="&'static str" required>
+  The identifier column name used in the WHERE clause (typically `"id"`)
+</ParamField>
+
+<Note>
+  Unlike `Insertable` and `Updatable`, `Deletable` has no required methods. It only needs constants to identify the table and ID column.
+</Note>
+
+## Example Implementation
+
+Here's how the `City` model implements `Deletable`:
+
+```rust
+impl Deletable for City {
+    const TABLE: &'static str = "cities";
+    const ID_COLUMN: &'static str = "id";
+}
+```
+
+Source: `~/workspace/source/src/models/city.rs:74-77`
+
+<Tip>
+  This is the simplest trait to implement - just two constants!
+</Tip>
+
+## Usage with generic_delete
+
+The `generic_delete` function uses this trait to generate and execute DELETE queries:
+
+```rust
+pub async fn generic_delete<T, ID>(id: ID, pool: &Pool<Postgres>) -> Result<T, Error>
+where
+    T: Deletable + for<'r> FromRow<'r, PgRow> + Send + Unpin,
+    for<'q> ID: Send + Sync + sqlx::Encode<'q, Postgres> + sqlx::Type<Postgres>,
+{
+    let query = format!(
+        "DELETE FROM {} WHERE {} = $1 RETURNING *",
+        T::TABLE,
+        T::ID_COLUMN
+    );
+
+    sqlx::query_as::<_, T>(query.as_str())
+        .bind(id)
+        .fetch_one(pool)
+        .await
+}
+```
+
+Source: `~/workspace/source/src/services/generic_query.rs:127-142`
+
+## Generated SQL
+
+For the `City` model, `generic_delete` generates:
+
+```sql
+DELETE FROM cities WHERE id = $1 RETURNING *
+```
+
+The function binds:
+- `$1` = `id` parameter
+
+<Note>
+  The `RETURNING *` clause returns the deleted row, allowing you to see what was removed.
+</Note>
+
+## Type-Safe ID Parameter
+
+The `ID` generic parameter allows flexible ID types:
+
+```rust
+// Works with i64
+generic_delete::<City, i64>(42, &pool).await
+
+// Could also work with UUID, String, etc.
+generic_delete::<User, Uuid>(user_id, &pool).await
+```
+
+The only requirement is that `ID` implements SQLx's encoding traits.
+
+## Error Handling
+
+The function returns `Result<T, Error>` where:
+
+- **Ok(T)** - The deleted row (as it existed before deletion)
+- **Err(Error)** - Database error, typically when the ID doesn't exist
+
+### No Rows Found
+
+If the ID doesn't exist, SQLx returns an error:
+
+```rust
+// Error: "no rows returned by a query that expected to return at least one row"
+```
+
+In the controller, this is mapped to a 404 status:
+
+```rust
+pub async fn delete_city(State(state): State<AppState>, Path(id): Path<i64>) -> impl IntoResponse {
+    let result = generic_delete::<City, _>(id, &state.db).await;
+    match result {
+        Ok(city) => json_response(
+            StatusCode::OK,
+            json!({ "status": "success", "data": city }),
+        ),
+        Err(e) => json_response(
+            StatusCode::NOT_FOUND,
+            json!({ "status": "error", "message": e.to_string() }),
+        ),
+    }
+}
+```
+
+Source: `~/workspace/source/src/controllers/city_controller.rs:94-112`
+
+## Benefits
+
+1. **Simplicity** - Only two constants required
+2. **Type Safety** - Generic ID type with compile-time validation
+3. **Returns Deleted Data** - The RETURNING clause provides the deleted row
+4. **Flexible ID Types** - Works with any type that implements SQLx traits
+5. **Code Reuse** - One function handles deletes for all models
+
+## Soft Deletes
+
+The current implementation performs hard deletes. For soft deletes, consider:
+
+### Option 1: Separate Trait
+
+```rust
+pub trait SoftDeletable {
+    const TABLE: &'static str;
+    const ID_COLUMN: &'static str;
+    const DELETED_AT_COLUMN: &'static str;
+}
+
+pub async fn generic_soft_delete<T>(id: i64, pool: &Pool<Postgres>) -> Result<T, Error>
+where
+    T: SoftDeletable + FromRow<PgRow> + Send + Unpin,
+{
+    let query = format!(
+        "UPDATE {} SET {} = NOW() WHERE {} = $1 RETURNING *",
+        T::TABLE,
+        T::DELETED_AT_COLUMN,
+        T::ID_COLUMN
+    );
+    sqlx::query_as(&query).bind(id).fetch_one(pool).await
+}
+```
+
+### Option 2: Enum Strategy
+
+```rust
+pub enum DeleteStrategy {
+    Hard,
+    Soft { deleted_at_column: &'static str },
+}
+
+pub trait Deletable {
+    const TABLE: &'static str;
+    const ID_COLUMN: &'static str;
+    const STRATEGY: DeleteStrategy;
+}
+```
+
+## Adding to New Models
+
+To make a new model deletable:
+
+1. Define the struct with `#[derive(FromRow, Serialize)]`
+2. Implement `Deletable` with table and ID column names
+3. Use `generic_delete::<YourModel, _>()` in your controller
+4. Handle the error case appropriately (404 or 500)
+
+<Warning>
+  Hard deletes are permanent. Consider adding foreign key constraints with CASCADE or implementing soft deletes for production systems.
+</Warning>

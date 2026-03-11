@@ -1,0 +1,200 @@
+---
+title: 'Updatable Trait'
+description: 'Enable UPDATE operations for any model'
+---
+
+## Overview
+
+The `Updatable` trait defines the contract for models that can be updated in the database. It works with the `generic_update` function to generate type-safe UPDATE queries.
+
+## Trait Definition
+
+```rust
+pub trait Updatable {
+    /// Tabla
+    const TABLE: &'static str;
+
+    /// Columnas a actualizar (SIN id)
+    const COLUMNS: &'static [&'static str];
+
+    /// Columna WHERE (ej: id)
+    const ID_COLUMN: &'static str;
+
+    /// Binds de columnas + id (AL FINAL)
+    fn bind_update<'q>(
+        self,
+        query: sqlx::query::QueryAs<'q, Postgres, Self, PgArguments>,
+    ) -> sqlx::query::QueryAs<'q, Postgres, Self, PgArguments>
+    where
+        Self: Sized;
+}
+```
+
+Source: `~/workspace/source/src/repositories/updatable.rs:3-20`
+
+## Associated Constants
+
+<ParamField path="TABLE" type="&'static str" required>
+  The database table name (e.g., `"cities"`)
+</ParamField>
+
+<ParamField path="COLUMNS" type="&'static [&'static str]" required>
+  Array of column names to update (excluding the ID column)
+</ParamField>
+
+<ParamField path="ID_COLUMN" type="&'static str" required>
+  The identifier column name used in the WHERE clause (typically `"id"`)
+</ParamField>
+
+## Required Methods
+
+### `bind_update`
+
+Binds the model's field values to the prepared query. The bind order must be:
+1. All columns from `COLUMNS` (in order)
+2. The ID value (last)
+
+**Parameters:**
+- `self` - Consumes the model instance
+- `query` - SQLx QueryAs builder to bind values to
+
+**Returns:** The query builder with all values bound
+
+<Warning>
+  The ID must be bound LAST, after all other columns. This matches the generated SQL WHERE clause.
+</Warning>
+
+## Example Implementation
+
+Here's how the `City` model implements `Updatable`:
+
+```rust
+impl Updatable for City {
+    const TABLE: &'static str = "cities";
+    const COLUMNS: &'static [&'static str] = &["name", "region"];
+    const ID_COLUMN: &'static str = "id";
+
+    fn bind_update<'q>(
+        self,
+        query: sqlx::query::QueryAs<'q, Postgres, Self, PgArguments>,
+    ) -> sqlx::query::QueryAs<'q, Postgres, Self, PgArguments> {
+        query
+            .bind(self.name)      // $1
+            .bind(self.region)    // $2
+            .bind(self.id)        // $3 (WHERE id = $3)
+    }
+}
+```
+
+Source: `~/workspace/source/src/models/city.rs:58-72`
+
+<Note>
+  The bind order matches the generated SQL: SET columns first, then WHERE clause.
+</Note>
+
+## Usage with generic_update
+
+The `generic_update` function uses this trait to generate and execute UPDATE queries:
+
+```rust
+pub async fn generic_update<T>(value: T, pool: &Pool<Postgres>) -> Result<T, Error>
+where
+    T: Updatable + for<'r> FromRow<'r, PgRow> + Send + Unpin,
+{
+    let set_clause = T::COLUMNS
+        .iter()
+        .enumerate()
+        .map(|(i, col)| format!("{} = ${}", col, i + 1))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    let where_index = T::COLUMNS.len() + 1;
+
+    let query = format!(
+        "UPDATE {} SET {} WHERE {} = ${} RETURNING *",
+        T::TABLE,
+        set_clause,
+        T::ID_COLUMN,
+        where_index
+    );
+
+    let q = sqlx::query_as::<_, T>(&query);
+    let q = value.bind_update(q);
+
+    q.fetch_one(pool).await
+}
+```
+
+Source: `~/workspace/source/src/services/generic_query.rs:101-126`
+
+## Generated SQL
+
+For the `City` model, `generic_update` generates:
+
+```sql
+UPDATE cities SET name = $1, region = $2 WHERE id = $3 RETURNING *
+```
+
+The trait implementation binds:
+- `$1` = `self.name`
+- `$2` = `self.region`
+- `$3` = `self.id`
+
+## How It Works
+
+1. **SET clause generation**: Each column in `COLUMNS` becomes `column_name = $N`
+2. **WHERE clause**: Uses `ID_COLUMN` with the next placeholder number
+3. **Binding**: `bind_update()` binds values in the correct order
+4. **RETURNING**: Returns the updated row with all fields
+
+## Benefits
+
+1. **Type Safety** - Compile-time validation of column bindings
+2. **No SQL Injection** - All values are bound as parameters
+3. **Code Reuse** - One function handles updates for all models
+4. **Automatic RETURNING** - Get the updated row without a second query
+
+## Common Patterns
+
+### Partial Updates
+
+If you need to update only specific fields, consider creating a separate update request struct:
+
+```rust
+// Instead of updating all fields
+pub struct CityPartialUpdate {
+    pub id: i64,
+    pub name: Option<String>,
+    pub region: Option<String>,
+}
+```
+
+<Tip>
+  The current implementation always updates all columns. For partial updates, you'll need a separate trait or conditional logic.
+</Tip>
+
+### Version Control
+
+Add a version column to implement optimistic locking:
+
+```rust
+const COLUMNS: &'static [&'static str] = &["name", "region", "version"];
+
+fn bind_update<'q>(self, query: ...) -> ... {
+    query
+        .bind(self.name)
+        .bind(self.region)
+        .bind(self.version + 1)  // Increment version
+        .bind(self.id)
+        .bind(self.version)       // WHERE version = old_version
+}
+```
+
+## Adding to New Models
+
+To make a new model updatable:
+
+1. Define the struct with `#[derive(FromRow, Serialize)]`
+2. Implement `Updatable` with table, columns, and ID column
+3. Ensure `bind_update()` binds all SET columns, then the ID
+4. Use `generic_update()` in your controller

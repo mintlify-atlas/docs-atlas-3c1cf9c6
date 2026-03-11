@@ -1,0 +1,414 @@
+---
+title: 'Cities Endpoints'
+description: 'Complete reference for City resource CRUD operations'
+---
+
+## List Cities
+
+`GET /cities`
+
+Retrieve a list of cities with optional filtering and pagination.
+
+### Query Parameters
+
+<ParamField query="name" type="string" optional>
+  Filter cities by name (case-insensitive partial match using ILIKE)
+</ParamField>
+
+<ParamField query="region" type="string" optional>
+  Filter cities by exact region match
+</ParamField>
+
+<ParamField query="page" type="integer" optional>
+  Page number for pagination (1-based)
+</ParamField>
+
+<ParamField query="per_page" type="integer" optional>
+  Number of results per page
+</ParamField>
+
+<Note>
+  Both `page` and `per_page` must be provided together for pagination to work.
+</Note>
+
+### Response
+
+<ResponseField name="status" type="string" required>
+  `"success"` or `"error"`
+</ResponseField>
+
+<ResponseField name="data" type="array" required>
+  Array of city objects
+  
+  <ResponseField name="id" type="integer">
+    Unique city identifier
+  </ResponseField>
+  
+  <ResponseField name="name" type="string">
+    City name
+  </ResponseField>
+  
+  <ResponseField name="region" type="string">
+    Geographic region
+  </ResponseField>
+</ResponseField>
+
+### Examples
+
+<CodeGroup>
+
+```bash List all cities
+curl http://localhost:8080/api/cities
+```
+
+```bash Filter by name
+curl "http://localhost:8080/api/cities?name=San"
+```
+
+```bash Filter by region
+curl "http://localhost:8080/api/cities?region=California"
+```
+
+```bash With pagination
+curl "http://localhost:8080/api/cities?page=1&per_page=10"
+```
+
+```bash Combined filters
+curl "http://localhost:8080/api/cities?region=California&page=1&per_page=5"
+```
+
+</CodeGroup>
+
+### Response Examples
+
+<CodeGroup>
+
+```json Success Response
+{
+  "status": "success",
+  "data": [
+    {
+      "id": 1,
+      "name": "San Francisco",
+      "region": "California"
+    },
+    {
+      "id": 2,
+      "name": "Los Angeles",
+      "region": "California"
+    }
+  ]
+}
+```
+
+```json Error Response
+{
+  "status": "error",
+  "message": "error communicating with database"
+}
+```
+
+</CodeGroup>
+
+### Generated SQL
+
+The generic_query system generates SQL based on filters:
+
+```sql No filters
+SELECT id, name, region FROM cities ORDER BY id DESC
+```
+
+```sql With name filter
+SELECT id, name, region FROM cities WHERE name ILIKE $1 ORDER BY id DESC
+-- Binds: ["%San%"]
+```
+
+```sql With pagination
+SELECT id, name, region FROM cities ORDER BY id DESC LIMIT 10 OFFSET 0
+```
+
+### Status Codes
+
+- `200 OK` - Successfully retrieved cities
+- `500 Internal Server Error` - Database error
+
+---
+
+## Create City
+
+`POST /city`
+
+Create a new city.
+
+### Request Body
+
+<ParamField body="name" type="string" required>
+  City name
+</ParamField>
+
+<ParamField body="region" type="string" required>
+  Geographic region
+</ParamField>
+
+### Response
+
+<ResponseField name="status" type="string" required>
+  `"success"` or `"error"`
+</ResponseField>
+
+<ResponseField name="data" type="object" required>
+  The created city object
+  
+  <ResponseField name="id" type="integer">
+    Auto-generated unique identifier
+  </ResponseField>
+  
+  <ResponseField name="name" type="string">
+    City name
+  </ResponseField>
+  
+  <ResponseField name="region" type="string">
+    Geographic region
+  </ResponseField>
+</ResponseField>
+
+### Example
+
+```bash Request
+curl -X POST http://localhost:8080/api/city \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "San Francisco",
+    "region": "California"
+  }'
+```
+
+### Response Examples
+
+<CodeGroup>
+
+```json Success Response
+{
+  "status": "success",
+  "data": {
+    "id": 1,
+    "name": "San Francisco",
+    "region": "California"
+  }
+}
+```
+
+```json Error Response
+{
+  "status": "error",
+  "message": "duplicate key value violates unique constraint"
+}
+```
+
+</CodeGroup>
+
+### Generated SQL
+
+```sql
+INSERT INTO cities (name, region) VALUES ($1, $2) RETURNING *
+-- Binds: ["San Francisco", "California"]
+```
+
+### Status Codes
+
+- `201 Created` - City created successfully
+- `500 Internal Server Error` - Database error or constraint violation
+
+---
+
+## Update City
+
+`PUT /city/:id`
+
+Update an existing city.
+
+### Path Parameters
+
+<ParamField path="id" type="integer" required>
+  The ID of the city to update
+</ParamField>
+
+### Request Body
+
+<ParamField body="name" type="string" required>
+  Updated city name
+</ParamField>
+
+<ParamField body="region" type="string" required>
+  Updated geographic region
+</ParamField>
+
+### Response
+
+<ResponseField name="status" type="string" required>
+  `"success"` or `"error"`
+</ResponseField>
+
+<ResponseField name="data" type="object" required>
+  The updated city object
+  
+  <ResponseField name="id" type="integer">
+    City identifier
+  </ResponseField>
+  
+  <ResponseField name="name" type="string">
+    Updated city name
+  </ResponseField>
+  
+  <ResponseField name="region" type="string">
+    Updated geographic region
+  </ResponseField>
+</ResponseField>
+
+### Example
+
+```bash Request
+curl -X PUT http://localhost:8080/api/city/1 \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "San Francisco",
+    "region": "CA"
+  }'
+```
+
+### Response Examples
+
+<CodeGroup>
+
+```json Success Response
+{
+  "status": "success",
+  "data": {
+    "id": 1,
+    "name": "San Francisco",
+    "region": "CA"
+  }
+}
+```
+
+```json Error Response
+{
+  "status": "error",
+  "message": "no rows returned by a query that expected to return at least one row"
+}
+```
+
+</CodeGroup>
+
+### Generated SQL
+
+```sql
+UPDATE cities SET name = $1, region = $2 WHERE id = $3 RETURNING *
+-- Binds: ["San Francisco", "CA", 1]
+```
+
+<Note>
+  If the city with the specified ID doesn't exist, the query will fail but still returns 500 instead of 404. This is because `fetch_one` throws an error rather than returning an empty result.
+</Note>
+
+### Status Codes
+
+- `200 OK` - City updated successfully
+- `500 Internal Server Error` - Database error or city not found
+
+---
+
+## Delete City
+
+`DELETE /city/:id`
+
+Delete a city by ID.
+
+### Path Parameters
+
+<ParamField path="id" type="integer" required>
+  The ID of the city to delete
+</ParamField>
+
+### Response
+
+<ResponseField name="status" type="string" required>
+  `"success"` or `"error"`
+</ResponseField>
+
+<ResponseField name="data" type="object" required>
+  The deleted city object (as it existed before deletion)
+  
+  <ResponseField name="id" type="integer">
+    City identifier
+  </ResponseField>
+  
+  <ResponseField name="name" type="string">
+    City name
+  </ResponseField>
+  
+  <ResponseField name="region" type="string">
+    Geographic region
+  </ResponseField>
+</ResponseField>
+
+### Example
+
+```bash Request
+curl -X DELETE http://localhost:8080/api/city/1
+```
+
+### Response Examples
+
+<CodeGroup>
+
+```json Success Response
+{
+  "status": "success",
+  "data": {
+    "id": 1,
+    "name": "San Francisco",
+    "region": "California"
+  }
+}
+```
+
+```json Error Response (Not Found)
+{
+  "status": "error",
+  "message": "no rows returned by a query that expected to return at least one row"
+}
+```
+
+</CodeGroup>
+
+### Generated SQL
+
+```sql
+DELETE FROM cities WHERE id = $1 RETURNING *
+-- Binds: [1]
+```
+
+<Tip>
+  The `RETURNING *` clause returns the deleted row, allowing you to see what was removed.
+</Tip>
+
+### Status Codes
+
+- `200 OK` - City deleted successfully
+- `404 Not Found` - City with specified ID doesn't exist
+
+---
+
+## Implementation Details
+
+All city endpoints use generic query functions that work with any model implementing the appropriate traits:
+
+- **List**: Uses `generic_list::<City, CityResource>()` with the [Listable](/api/traits/listable) trait
+- **Create**: Uses `generic_insert()` with the [Insertable](/api/traits/insertable) trait
+- **Update**: Uses `generic_update()` with the [Updatable](/api/traits/updatable) trait
+- **Delete**: Uses `generic_delete::<City, _>()` with the [Deletable](/api/traits/deletable) trait
+
+This trait-based architecture enables adding new resources with minimal boilerplate code.
+
+Source: `~/workspace/source/src/controllers/city_controller.rs`

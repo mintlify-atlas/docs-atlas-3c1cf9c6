@@ -1,0 +1,273 @@
+---
+title: Database Connection
+description: Learn how database connections are configured and pooled
+---
+
+Template API Rust uses SQLx with PostgreSQL for type-safe, async database operations. Connection pooling ensures efficient resource usage under concurrent load.
+
+## Connection Configuration
+
+The database connection is established in `main.rs` using environment variables:
+
+```rust src/main.rs
+use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+use tokio::time::Duration;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    dotenvy::dotenv().ok();
+
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::INFO)
+        .with_target(false)
+        .init();
+
+    tracing::info!("acquiring connection...");
+
+    let database_url = std::env::var("DATABASE_URL")
+        .expect("DATABASE_URL must be set");
+    
+    let connect_options = database_url
+        .parse::<PgConnectOptions>()?
+        .statement_cache_capacity(0);
+
+    let pool = PgPoolOptions::new()
+        .max_connections(15)
+        .min_connections(5)
+        .idle_timeout(Duration::from_secs(300))
+        .acquire_timeout(Duration::from_secs(10))
+        .connect_with(connect_options)
+        .await?;
+    
+    tracing::info!("connection acquired");
+
+    let app_state = AppState { db: pool };
+    // ...
+}
+```
+
+## Connection Pool Settings
+
+### Max Connections (15)
+
+The maximum number of simultaneous database connections.
+
+```rust
+.max_connections(15)
+```
+
+<Tip>
+  Adjust based on your database plan limits and expected concurrent load. Most managed PostgreSQL services have connection limits (e.g., Supabase free tier: 50 connections).
+</Tip>
+
+### Min Connections (5)
+
+The minimum number of connections kept alive:
+
+```rust
+.min_connections(5)
+```
+
+Keeping idle connections reduces latency for new requests by avoiding connection overhead.
+
+### Idle Timeout (300 seconds)
+
+Connections idle for more than 5 minutes are closed:
+
+```rust
+.idle_timeout(Duration::from_secs(300))
+```
+
+<Note>
+  This prevents holding connections unnecessarily during low-traffic periods while maintaining the minimum pool size.
+</Note>
+
+### Acquire Timeout (10 seconds)
+
+Maximum time to wait for an available connection:
+
+```rust
+.acquire_timeout(Duration::from_secs(10))
+```
+
+If all connections are busy and the pool is at max capacity, requests wait up to 10 seconds before failing.
+
+### Statement Cache Disabled
+
+```rust
+.statement_cache_capacity(0)
+```
+
+Statement caching is disabled to avoid compatibility issues with some managed PostgreSQL services (like Supabase with PgBouncer).
+
+<Warning>
+  If your database uses connection pooling (like PgBouncer in transaction mode), keep `statement_cache_capacity(0)` to prevent "prepared statement does not exist" errors.
+</Warning>
+
+## Environment Variables
+
+Set the database URL in your `.env` file:
+
+```bash .env
+DATABASE_URL=postgresql://usuario:contraseña@host:5432/base_de_datos?sslmode=require
+```
+
+### URL Format
+
+```
+postgresql://[username]:[password]@[host]:[port]/[database]?[parameters]
+```
+
+**Components:**
+- `username` - Database user
+- `password` - User password
+- `host` - Database server hostname or IP
+- `port` - Port (default: 5432)
+- `database` - Database name
+- `parameters` - Connection parameters (e.g., `sslmode=require`)
+
+### Common Parameters
+
+| Parameter | Values | Description |
+|-----------|--------|-------------|
+| `sslmode` | `disable`, `allow`, `prefer`, `require`, `verify-ca`, `verify-full` | SSL/TLS enforcement |
+| `connect_timeout` | Seconds | Connection timeout |
+| `application_name` | String | Application identifier in pg_stat_activity |
+
+<Tip>
+  Use `sslmode=require` for remote databases to ensure encrypted connections. Local development can use `sslmode=disable`.
+</Tip>
+
+## Shared State Pattern
+
+The connection pool is wrapped in `AppState` and shared across all request handlers:
+
+```rust src/app_state.rs
+use sqlx::PgPool;
+
+#[derive(Clone)]
+pub struct AppState {
+    pub db: PgPool
+}
+```
+
+Axum's `State` extractor provides access in handlers:
+
+```rust
+pub async fn list_cities(
+    State(state): State<AppState>,
+    Query(filter): Query<CityResource>,
+) -> impl IntoResponse {
+    let result = generic_list::<City, CityResource>(
+        filter, 
+        Some(("id", "DESC")), 
+        &state.db  // Access the pool
+    ).await;
+    // ...
+}
+```
+
+<Note>
+  `PgPool` is `Clone` and internally uses `Arc`, so cloning is cheap and shares the same connection pool.
+</Note>
+
+## SQLx Features
+
+The project uses SQLx with specific features enabled:
+
+```toml Cargo.toml
+[dependencies.sqlx]
+version = "0.6.2"
+features = [
+  "runtime-tokio-native-tls",  # Async runtime + TLS support
+  "postgres",                   # PostgreSQL driver
+  "chrono",                     # Date/time support
+  "uuid"                        # UUID support
+]
+```
+
+### runtime-tokio-native-tls
+
+Uses Tokio async runtime with native TLS implementation for encrypted connections.
+
+### postgres
+
+Enables PostgreSQL-specific features and query syntax.
+
+### chrono & uuid
+
+Automatically handle `TIMESTAMP` and `UUID` columns in queries and model fields.
+
+## Connection Best Practices
+
+<AccordionGroup>
+  <Accordion title="Tune pool size to your workload">
+    Monitor connection usage under load. If requests frequently timeout waiting for connections, increase `max_connections`. If connections sit idle, reduce it.
+  </Accordion>
+
+  <Accordion title="Use SSL in production">
+    Always use `sslmode=require` or higher for production databases to encrypt data in transit.
+  </Accordion>
+
+  <Accordion title="Health checks">
+    Consider adding a `/health` endpoint that verifies database connectivity:
+
+    ```rust
+    pub async fn health_check(
+        State(state): State<AppState>,
+    ) -> impl IntoResponse {
+        match sqlx::query("SELECT 1").execute(&state.db).await {
+            Ok(_) => StatusCode::OK,
+            Err(_) => StatusCode::SERVICE_UNAVAILABLE,
+        }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="Connection limits with managed services">
+    Managed PostgreSQL services (Supabase, RDS, etc.) have connection limits per plan. Ensure your `max_connections` setting doesn't exceed available connections, especially when running multiple instances.
+  </Accordion>
+</AccordionGroup>
+
+## Troubleshooting
+
+### Connection refused
+
+**Symptom:** `connection refused` error on startup
+
+**Solutions:**
+- Verify `DATABASE_URL` is correct
+- Check database server is running
+- Ensure network connectivity (firewall, security groups)
+- Verify port is correct (default: 5432)
+
+### Too many connections
+
+**Symptom:** `too many connections` error
+
+**Solutions:**
+- Reduce `max_connections` in application
+- Check for connection leaks (unreleased connections)
+- Use connection pooler like PgBouncer
+- Upgrade database plan for more connections
+
+### Acquire timeout
+
+**Symptom:** Requests timeout waiting for connections
+
+**Solutions:**
+- Increase `max_connections`
+- Increase `acquire_timeout`
+- Optimize slow queries
+- Profile to find bottlenecks
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Environment Setup" icon="gear" href="/guides/environment-setup">
+    Complete guide to environment variables
+  </Card>
+  <Card title="Docker Deployment" icon="docker" href="/guides/docker-deployment">
+    Deploy with Docker and environment configuration
+  </Card>
+</CardGroup>

@@ -1,0 +1,293 @@
+---
+title: Environment Setup
+description: Configure environment variables for local development and deployment
+---
+
+Template API Rust uses environment variables for configuration. This guide covers all available settings and best practices.
+
+## Environment File
+
+Create a `.env` file in the project root:
+
+```bash
+cp .env.example .env
+```
+
+The `.env.example` file contains:
+
+```bash .env.example
+DATABASE_URL=postgresql://usuario:contraseña@host:5432/base_de_datos?sslmode=require
+```
+
+<Warning>
+  Never commit `.env` files to version control. They contain sensitive credentials. The `.gitignore` should already exclude `.env`.
+</Warning>
+
+## Required Variables
+
+### DATABASE_URL
+
+PostgreSQL connection string:
+
+```bash
+DATABASE_URL=postgresql://username:password@host:5432/database?sslmode=require
+```
+
+**Format breakdown:**
+
+```
+postgresql://[user]:[password]@[host]:[port]/[database]?[params]
+```
+
+<Tip>
+  The application will panic on startup if `DATABASE_URL` is not set, ensuring you never accidentally run without a database.
+</Tip>
+
+## Optional Variables
+
+### RUST_LOG
+
+Controls logging verbosity:
+
+```bash
+RUST_LOG=debug
+```
+
+**Available levels:**
+- `error` - Only errors
+- `warn` - Warnings and errors
+- `info` - Informational messages (default)
+- `debug` - Debug information
+- `trace` - Very verbose tracing
+
+You can also filter by module:
+
+```bash
+# Only show info logs from your app, suppress dependencies
+RUST_LOG=template_api_rust=info
+
+# Debug SQL queries, info for everything else
+RUST_LOG=sqlx=debug,info
+```
+
+<Note>
+  The default level is set in code to `INFO` if `RUST_LOG` is not provided. See `src/main.rs:20`
+</Note>
+
+### PORT
+
+**Note:** Currently, the port is hardcoded to `3000` in `src/main.rs:53`. To make it configurable:
+
+```rust src/main.rs
+let port = std::env::var("PORT").unwrap_or_else(|_| "3000".to_string());
+let addr = format!("0.0.0.0:{}", port);
+let listener = TcpListener::bind(&addr).await?;
+tracing::info!("Server listening on http://{}", addr);
+```
+
+Then in `.env`:
+
+```bash
+PORT=3000
+```
+
+## Example Configurations
+
+### Local Development
+
+```bash .env
+DATABASE_URL=postgresql://postgres:postgres@localhost:5432/template?sslmode=disable
+RUST_LOG=debug
+PORT=3000
+```
+
+### Supabase
+
+```bash .env
+DATABASE_URL=postgresql://postgres:[YOUR-PASSWORD]@db.[PROJECT-REF].supabase.co:5432/postgres?sslmode=require
+RUST_LOG=info
+```
+
+<Tip>
+  Find your Supabase connection string in: Project Settings → Database → Connection String (URI)
+</Tip>
+
+### AWS RDS
+
+```bash .env
+DATABASE_URL=postgresql://username:password@database.region.rds.amazonaws.com:5432/dbname?sslmode=require
+RUST_LOG=info
+```
+
+### Docker Compose
+
+When using Docker Compose with the optional local PostgreSQL service:
+
+```bash .env
+DATABASE_URL=postgresql://postgres:postgres@db:5432/template?sslmode=disable
+RUST_LOG=info
+```
+
+<Note>
+  In Docker Compose networks, use the service name (`db`) as the host instead of `localhost`.
+</Note>
+
+## Loading Environment Variables
+
+The application loads environment variables using the `dotenvy` crate:
+
+```rust src/main.rs
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    dotenvy::dotenv().ok();  // Load .env file
+
+    // Now env vars are available
+    let database_url = std::env::var("DATABASE_URL")
+        .expect("DATABASE_URL must be set");
+    // ...
+}
+```
+
+### Load Order
+
+1. System environment variables
+2. `.env` file in current directory
+3. `.env` file in parent directories (recursive search)
+
+<Warning>
+  System environment variables take precedence over `.env` file values.
+</Warning>
+
+## Docker Environment Variables
+
+### Using .env file
+
+The `docker-compose.yml` references the `.env` file:
+
+```yaml docker-compose.yml
+services:
+  api:
+    build: .
+    container_name: template_api_rust
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env  # Load from .env file
+    restart: unless-stopped
+```
+
+### Inline environment variables
+
+You can also specify variables directly:
+
+```yaml
+services:
+  api:
+    build: .
+    environment:
+      DATABASE_URL: postgresql://user:pass@host:5432/db
+      RUST_LOG: info
+```
+
+### Docker run
+
+Pass environment file to `docker run`:
+
+```bash
+docker run --rm -p 3000:3000 --env-file .env template-api-rust
+```
+
+Or individual variables:
+
+```bash
+docker run --rm -p 3000:3000 \
+  -e DATABASE_URL="postgresql://..." \
+  -e RUST_LOG=info \
+  template-api-rust
+```
+
+## Security Best Practices
+
+<AccordionGroup>
+  <Accordion title="Never commit secrets to version control">
+    Ensure `.env` is in `.gitignore`. Use `.env.example` with placeholder values for documentation.
+  </Accordion>
+
+  <Accordion title="Use strong passwords">
+    Generate strong, unique passwords for database users. Avoid default credentials.
+  </Accordion>
+
+  <Accordion title="Rotate credentials regularly">
+    Periodically update database passwords and connection strings, especially after team member changes.
+  </Accordion>
+
+  <Accordion title="Use SSL in production">
+    Always include `?sslmode=require` for production databases to encrypt connections.
+  </Accordion>
+
+  <Accordion title="Limit database permissions">
+    Create database users with minimal required permissions. Don't use superuser accounts for applications.
+  </Accordion>
+
+  <Accordion title="Use secrets management in production">
+    For production deployments, use dedicated secrets management:
+    - AWS Secrets Manager
+    - HashiCorp Vault  
+    - Kubernetes Secrets
+    - Cloud platform secret stores
+  </Accordion>
+</AccordionGroup>
+
+## Troubleshooting
+
+### "DATABASE_URL must be set" panic
+
+**Symptom:** Application panics immediately on startup
+
+**Solution:** Ensure `.env` file exists and contains `DATABASE_URL`, or set it as a system environment variable:
+
+```bash
+export DATABASE_URL="postgresql://..."
+cargo run
+```
+
+### Environment variables not loading
+
+**Symptom:** Variables in `.env` seem ignored
+
+**Solutions:**
+- Verify `.env` is in the project root (same directory as `Cargo.toml`)
+- Check for syntax errors in `.env` (no spaces around `=`)
+- Ensure no conflicting system environment variables
+- Try explicitly setting variables:
+  ```bash
+  export DATABASE_URL="postgresql://..."
+  ```
+
+### Docker container can't connect to localhost database
+
+**Symptom:** Works locally but fails in Docker
+
+**Solution:** Replace `localhost` with `host.docker.internal` (Mac/Windows) or use Docker Compose networks:
+
+```bash
+# Don't use:
+DATABASE_URL=postgresql://postgres:postgres@localhost:5432/db
+
+# Use instead:
+DATABASE_URL=postgresql://postgres:postgres@host.docker.internal:5432/db
+
+# Or with Docker Compose service name:
+DATABASE_URL=postgresql://postgres:postgres@db:5432/template
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Database Connection" icon="database" href="/concepts/database-connection">
+    Learn about connection pooling and configuration
+  </Card>
+  <Card title="Docker Deployment" icon="docker" href="/guides/docker-deployment">
+    Deploy with Docker using environment variables
+  </Card>
+</CardGroup>

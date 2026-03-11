@@ -1,0 +1,73 @@
+---
+title: 'API Overview'
+description: 'Learn about the Template API REST endpoints'
+---
+
+## Introduction
+
+The Template API is a RESTful API built with Axum and PostgreSQL. It provides CRUD operations for managing cities with a clean, trait-based architecture that enables code reuse across resources.
+
+## Base URL
+
+```
+http://localhost:8080/api
+```
+
+<Note>
+  The base URL may vary depending on your deployment environment. Update the host and port as needed.
+</Note>
+
+## Authentication
+
+This template API does not currently implement authentication. Add authentication middleware to secure your endpoints in production.
+
+## Response Format
+
+All API responses follow a consistent JSON structure:
+
+### Success Response
+
+```json
+{
+  "status": "success",
+  "data": {
+    // Response data here
+  }
+}
+```
+
+### Error Response
+
+```json
+{
+  "status": "error",
+  "message": "Error description"
+}
+```
+
+<ResponseField name="status" type="string" required>
+  Either `"success"` or `"error"`
+</ResponseField>
+
+<ResponseField name="data" type="object">
+  The response payload (present in successful responses)
+</ResponseField>
+
+<ResponseField name="message" type="string">
+  Error description (present in error responses)
+</ResponseField>
+
+## Content Type
+
+All requests and responses use `application/json` content type.
+
+## Available Endpoints
+
+The API currently provides endpoints for managing cities:
+
+- `GET /cities` - List cities with optional filtering and pagination
+- `POST /city` - Create a new city
+- `PUT /city/:id` - Update an existing city
+- `DELETE /city/:id` - Delete a city
+
+See the [Cities Endpoint](/api/endpoints/cities) documentation for detailed information.

@@ -1,0 +1,545 @@
+---
+title: Adding Resources
+description: Step-by-step guide to add new resources and endpoints to your API
+---
+
+Learn how to extend Template API Rust by adding new resources with full CRUD operations. This guide uses the existing `City` resource as a reference.
+
+## Overview
+
+Adding a new resource involves creating:
+
+1. **Model** - Database entity with repository trait implementations
+2. **Request** - Input validation struct
+3. **Resource** - Query parameters for filtering
+4. **Controller** - HTTP request handlers
+5. **Routes** - Endpoint definitions
+
+## Example: Adding a Product Resource
+
+Let's add a `Product` resource with name, price, and stock fields.
+
+### Step 1: Create the Database Table
+
+First, create the PostgreSQL table:
+
+```sql
+CREATE TABLE products (
+    id BIGSERIAL PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    price DECIMAL(10, 2) NOT NULL,
+    stock INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+```
+
+<Note>
+  Run this SQL in your PostgreSQL database using `psql`, pgAdmin, or your database management tool.
+</Note>
+
+### Step 2: Create the Model
+
+Create `src/models/product.rs`:
+
+```rust src/models/product.rs
+use sqlx::FromRow;
+use sqlx::{Postgres, postgres::PgArguments};
+use serde::Serialize;
+
+use crate::repositories::insertable::Insertable;
+use crate::repositories::updatable::Updatable;
+use crate::repositories::deletable::Deletable;
+use crate::repositories::listable::{Listable, FilterOp};
+use crate::resources::product_resource::ProductResource;
+
+#[derive(Debug, FromRow, Serialize)]
+pub struct Product {
+    pub id: i64,
+    pub name: String,
+    pub price: rust_decimal::Decimal,  // Add rust_decimal to Cargo.toml
+    pub stock: i32,
+}
+
+// Implement Insertable trait
+impl Insertable for Product {
+    const TABLE: &'static str = "products";
+    const COLUMNS: &'static [&'static str] = &["name", "price", "stock"];
+
+    fn bind<'q>(
+        self,
+        query: sqlx::query::QueryAs<'q, Postgres, Self, PgArguments>,
+    ) -> sqlx::query::QueryAs<'q, Postgres, Self, PgArguments> {
+        query
+            .bind(self.name)
+            .bind(self.price)
+            .bind(self.stock)
+    }
+}
+
+// Implement Updatable trait
+impl Updatable for Product {
+    const TABLE: &'static str = "products";
+    const COLUMNS: &'static [&'static str] = &["name", "price", "stock"];
+    const ID_COLUMN: &'static str = "id";
+
+    fn bind_update<'q>(
+        self,
+        query: sqlx::query::QueryAs<'q, Postgres, Self, PgArguments>,
+    ) -> sqlx::query::QueryAs<'q, Postgres, Self, PgArguments> {
+        query
+            .bind(self.name)
+            .bind(self.price)
+            .bind(self.stock)
+            .bind(self.id)  // WHERE id = $n (MUST be last)
+    }
+}
+
+// Implement Deletable trait
+impl Deletable for Product {
+    const TABLE: &'static str = "products";
+    const ID_COLUMN: &'static str = "id";
+}
+
+// Implement Listable on the resource struct (see step 4)
+```
+
+<Warning>
+  In `bind_update`, the ID **must** be bound last to match the generated SQL WHERE clause.
+</Warning>
+
+### Step 3: Create the Request Struct
+
+Create `src/requests/product_request.rs`:
+
+```rust src/requests/product_request.rs
+use serde::Deserialize;
+
+#[derive(Deserialize)]
+pub struct ProductRequest {
+    pub name: String,
+    pub price: f64,
+    pub stock: i32,
+}
+```
+
+<Tip>
+  The request struct is for **input validation**. You can add validation logic here using crates like `validator`.
+</Tip>
+
+### Step 4: Create the Resource Struct
+
+Create `src/resources/product_resource.rs`:
+
+```rust src/resources/product_resource.rs
+use serde::Deserialize;
+
+#[derive(Deserialize, Default)]
+pub struct ProductResource {
+    pub name: Option<String>,
+    pub min_price: Option<f64>,
+    pub max_price: Option<f64>,
+    pub page: Option<u32>,
+    pub per_page: Option<u32>,
+}
+```
+
+Implement `Listable` in `src/models/product.rs`:
+
+```rust src/models/product.rs
+use crate::repositories::listable::{Listable, FilterOp};
+use crate::resources::product_resource::ProductResource;
+
+impl Listable for ProductResource {
+    const TABLE: &'static str = "products";
+    const COLUMNS: &'static [&'static str] = &["id", "name", "price", "stock"];
+
+    fn filters(&self) -> Vec<(&'static str, FilterOp)> {
+        let mut v = Vec::new();
+
+        if let Some(name) = &self.name {
+            v.push(("name", FilterOp::ILike(name.clone())));
+        }
+
+        // Note: For numeric range filters, you'll need to extend FilterOp
+        // This is a simplified example
+
+        v
+    }
+
+    fn page(&self) -> Option<u32> {
+        self.page
+    }
+
+    fn per_page(&self) -> Option<u32> {
+        self.per_page
+    }
+}
+```
+
+### Step 5: Create the Controller
+
+Create `src/controllers/product_controller.rs`:
+
+```rust src/controllers/product_controller.rs
+use axum::{
+    extract::{Path, Query, State},
+    http::StatusCode,
+    response::IntoResponse,
+    Json,
+};
+use serde_json::{json, Value};
+
+use crate::{
+    app_state::AppState,
+    models::product::Product,
+    requests::product_request::ProductRequest,
+    resources::product_resource::ProductResource,
+    services::generic_query::{generic_delete, generic_insert, generic_list, generic_update},
+};
+
+pub async fn list_products(
+    State(state): State<AppState>,
+    Query(filter): Query<ProductResource>,
+) -> impl IntoResponse {
+    let result = generic_list::<Product, ProductResource>(
+        filter,
+        Some(("id", "DESC")),
+        &state.db,
+    ).await;
+
+    match result {
+        Ok(data) => (
+            StatusCode::OK,
+            Json(json!({ "status": "success", "data": data })),
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "status": "error", "message": e.to_string() })),
+        ),
+    }
+}
+
+pub async fn create_product(
+    State(state): State<AppState>,
+    Json(body): Json<ProductRequest>,
+) -> impl IntoResponse {
+    let product = Product {
+        id: 0,  // Will be auto-generated
+        name: body.name,
+        price: rust_decimal::Decimal::from_f64_retain(body.price).unwrap(),
+        stock: body.stock,
+    };
+
+    let result = generic_insert(product, &state.db).await;
+
+    match result {
+        Ok(product) => (
+            StatusCode::CREATED,
+            Json(json!({ "status": "success", "data": product })),
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "status": "error", "message": e.to_string() })),
+        ),
+    }
+}
+
+pub async fn update_product(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(body): Json<ProductRequest>,
+) -> impl IntoResponse {
+    let product = Product {
+        id,
+        name: body.name,
+        price: rust_decimal::Decimal::from_f64_retain(body.price).unwrap(),
+        stock: body.stock,
+    };
+
+    let result = generic_update(product, &state.db).await;
+
+    match result {
+        Ok(product) => (
+            StatusCode::OK,
+            Json(json!({ "status": "success", "data": product })),
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "status": "error", "message": e.to_string() })),
+        ),
+    }
+}
+
+pub async fn delete_product(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> impl IntoResponse {
+    let result = generic_delete::<Product, _>(id, &state.db).await;
+
+    match result {
+        Ok(product) => (
+            StatusCode::OK,
+            Json(json!({ "status": "success", "data": product })),
+        ),
+        Err(e) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "status": "error", "message": e.to_string() })),
+        ),
+    }
+}
+```
+
+### Step 6: Add Routes
+
+Update `src/routes/api.rs`:
+
+```rust src/routes/api.rs
+use axum::{
+    Router,
+    routing::{delete, get, post, put},
+};
+
+use crate::controllers::{
+    city_controller::*,
+    product_controller::*,  // Add this
+};
+use crate::AppState;
+
+pub fn routes(state: AppState) -> Router {
+    Router::new()
+        // City routes
+        .route("/cities", get(list_cities))
+        .route("/city", post(create_city))
+        .route("/city/:id", put(update_city))
+        .route("/city/:id", delete(delete_city))
+        // Product routes
+        .route("/products", get(list_products))
+        .route("/product", post(create_product))
+        .route("/product/:id", put(update_product))
+        .route("/product/:id", delete(delete_product))
+        .with_state(state)
+}
+```
+
+### Step 7: Register Modules
+
+Update module declarations in:
+
+**`src/models/mod.rs`:**
+```rust
+pub mod city;
+pub mod product;  // Add this
+```
+
+**`src/requests/mod.rs`:**
+```rust
+pub mod request_city;
+pub mod product_request;  // Add this
+```
+
+**`src/resources/mod.rs`:**
+```rust
+pub mod city_resource;
+pub mod product_resource;  // Add this
+```
+
+**`src/controllers/mod.rs`:**
+```rust
+pub mod city_controller;
+pub mod product_controller;  // Add this
+```
+
+### Step 8: Test Your New Endpoints
+
+<CodeGroup>
+```bash List Products
+curl http://localhost:3000/products
+```
+
+```bash Create Product
+curl -X POST http://localhost:3000/product \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Laptop",
+    "price": 999.99,
+    "stock": 50
+  }'
+```
+
+```bash Update Product
+curl -X PUT http://localhost:3000/product/1 \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Gaming Laptop",
+    "price": 1299.99,
+    "stock": 30
+  }'
+```
+
+```bash Delete Product
+curl -X DELETE http://localhost:3000/product/1
+```
+
+```bash Filter by Name
+curl "http://localhost:3000/products?name=laptop"
+```
+
+```bash Pagination
+curl "http://localhost:3000/products?page=1&per_page=10"
+```
+</CodeGroup>
+
+## Checklist
+
+When adding a new resource, ensure you:
+
+<Steps>
+  <Step title="Database">
+    - [ ] Create table in PostgreSQL
+    - [ ] Define primary key and indexes
+  </Step>
+
+  <Step title="Model">
+    - [ ] Create model struct with `#[derive(FromRow, Serialize)]`
+    - [ ] Implement `Insertable` trait
+    - [ ] Implement `Updatable` trait
+    - [ ] Implement `Deletable` trait
+    - [ ] Bind ID **last** in `bind_update`
+  </Step>
+
+  <Step title="Request/Resource">
+    - [ ] Create request struct for input validation
+    - [ ] Create resource struct for query parameters
+    - [ ] Implement `Listable` on resource struct
+  </Step>
+
+  <Step title="Controller">
+    - [ ] Create controller with CRUD handlers
+    - [ ] Use generic service functions
+    - [ ] Return proper HTTP status codes
+  </Step>
+
+  <Step title="Routes">
+    - [ ] Add routes to `src/routes/api.rs`
+    - [ ] Follow RESTful naming conventions
+  </Step>
+
+  <Step title="Modules">
+    - [ ] Register module in `mod.rs` files
+    - [ ] Ensure all imports are correct
+  </Step>
+
+  <Step title="Testing">
+    - [ ] Test all CRUD operations
+    - [ ] Test filtering and pagination
+    - [ ] Verify error handling
+  </Step>
+</Steps>
+
+## Advanced: Custom Filter Operations
+
+To add custom filter operations (like range queries), extend the `FilterOp` enum:
+
+```rust src/repositories/listable.rs
+pub enum FilterOp {
+    Eq(String),
+    ILike(String),
+    Gt(String),      // Greater than
+    Lt(String),      // Less than
+    Gte(String),     // Greater than or equal
+    Lte(String),     // Less than or equal
+}
+```
+
+Update `generic_list` to handle new operations:
+
+```rust src/services/generic_query.rs
+match op {
+    FilterOp::Eq(val) => {
+        query.push_str(&format!("{} = ${}", col, bind_index));
+        binds.push(val.clone());
+    }
+    FilterOp::ILike(val) => {
+        query.push_str(&format!("{} ILIKE ${}", col, bind_index));
+        binds.push(format!("%{}%", val));
+    }
+    FilterOp::Gt(val) => {
+        query.push_str(&format!("{} > ${}", col, bind_index));
+        binds.push(val.clone());
+    }
+    // ... add other operations
+}
+```
+
+## Common Patterns
+
+### UUID Primary Keys
+
+For UUID-based IDs:
+
+```rust
+use uuid::Uuid;
+
+#[derive(Debug, FromRow, Serialize)]
+pub struct User {
+    pub id: Uuid,
+    pub email: String,
+}
+
+impl Deletable for User {
+    const TABLE: &'static str = "users";
+    const ID_COLUMN: &'static str = "id";
+}
+
+// Controller with UUID path param
+pub async fn delete_user(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> impl IntoResponse {
+    let result = generic_delete::<User, _>(id, &state.db).await;
+    // ...
+}
+```
+
+### Timestamps
+
+For automatic timestamps:
+
+```rust
+use chrono::{DateTime, Utc};
+
+#[derive(Debug, FromRow, Serialize)]
+pub struct Post {
+    pub id: i64,
+    pub title: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+// Exclude timestamps from insert/update
+impl Insertable for Post {
+    const COLUMNS: &'static [&'static str] = &["title"];  // No timestamps
+    // ...
+}
+```
+
+In PostgreSQL:
+```sql
+CREATE TABLE posts (
+    id BIGSERIAL PRIMARY KEY,
+    title VARCHAR(255) NOT NULL,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Repository Pattern" icon="database" href="/concepts/repository-pattern">
+    Deep dive into the trait implementations
+  </Card>
+  <Card title="Filtering & Pagination" icon="filter" href="/guides/filtering-pagination">
+    Master query parameters and data filtering
+  </Card>
+</CardGroup>

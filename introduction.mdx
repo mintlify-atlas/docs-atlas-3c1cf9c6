@@ -1,0 +1,87 @@
+---
+title: Introduction
+description: A minimalist and modern template for building high-performance RESTful APIs in Rust with Axum and PostgreSQL.
+---
+
+## Welcome to Template API Rust
+
+Template API Rust is a production-ready foundation for building fast, scalable REST APIs in Rust. Built with modern async patterns and type-safe database access, this template eliminates boilerplate while providing a solid architectural foundation for your API services.
+
+<CardGroup cols={2}>
+  <Card title="Quick Start" icon="rocket" href="/quickstart">
+    Get your API running in under 5 minutes
+  </Card>
+  <Card title="Architecture" icon="sitemap" href="/concepts/architecture">
+    Understand the project structure and design
+  </Card>
+  <Card title="API Reference" icon="code" href="/api/overview">
+    Explore the endpoints and traits
+  </Card>
+  <Card title="Docker Deployment" icon="docker" href="/guides/docker-deployment">
+    Deploy with Docker and Docker Compose
+  </Card>
+</CardGroup>
+
+## Key Features
+
+<CardGroup cols={2}>
+  <Card title="Axum Framework" icon="bolt">
+    Built on Axum for blazing-fast async HTTP routing with ergonomic extractors and middleware
+  </Card>
+  <Card title="Type-Safe Database" icon="database">
+    PostgreSQL integration with SQLx providing compile-time query verification
+  </Card>
+  <Card title="Generic Repository Pattern" icon="layer-group">
+    Reusable CRUD traits that eliminate boilerplate for new resources
+  </Card>
+  <Card title="Built-in Filtering" icon="filter">
+    Flexible query filtering and pagination support out of the box
+  </Card>
+  <Card title="Docker Optimized" icon="docker">
+    Multi-stage Dockerfile for minimal production images
+  </Card>
+  <Card title="Structured Logging" icon="file-lines">
+    Production-ready logging with the tracing ecosystem
+  </Card>
+</CardGroup>
+
+## Technology Stack
+
+- **Rust 1.83** - Modern, safe systems programming
+- **Axum 0.7** - Ergonomic web framework built on Tower and Hyper
+- **Tokio 1.37** - High-performance async runtime
+- **SQLx 0.6** - Async, pure-Rust SQL toolkit with compile-time query checking
+- **Serde** - Serialization framework for JSON handling
+- **Tracing** - Application-level tracing for diagnostics
+
+## Use Cases
+
+This template is ideal for:
+
+- **Microservices** - Build lightweight, focused API services
+- **Backend APIs** - Power web and mobile applications
+- **Data Processing** - High-throughput data ingestion and transformation
+- **Prototyping** - Quickly validate API designs with production-quality code
+
+## What's Included
+
+The template provides a working example with a City resource demonstrating:
+
+- Full CRUD operations (Create, Read, Update, Delete)
+- Query filtering with multiple operators (equality, case-insensitive pattern matching)
+- Pagination support
+- JSON request/response handling
+- Structured error responses
+- Database connection pooling
+- Environment-based configuration
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Quick Start Guide" icon="play" href="/quickstart">
+    Clone the template and run your first API server
+  </Card>
+  <Card title="Add Your First Resource" icon="plus" href="/guides/adding-resources">
+    Learn how to add new resources using the repository pattern
+  </Card>
+</CardGroup>

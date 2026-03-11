@@ -1,0 +1,343 @@
+---
+title: 'Listable Trait'
+description: 'Enable dynamic filtering and pagination for list queries'
+---
+
+## Overview
+
+The `Listable` trait defines the contract for filter/resource structs that can build dynamic SQL queries with filtering and pagination. Unlike other traits that are implemented on models, `Listable` is implemented on filter/resource structs.
+
+## Trait Definition
+
+```rust
+pub trait Listable {
+    const TABLE: &'static str;
+    const COLUMNS: &'static [&'static str];
+
+    /// columna, operación
+    fn filters(&self) -> Vec<(&'static str, FilterOp)>;
+
+    fn page(&self) -> Option<u32> {
+        None
+    }
+
+    fn per_page(&self) -> Option<u32> {
+        None
+    }
+}
+```
+
+Source: `~/workspace/source/src/repositories/listable.rs:6-20`
+
+## FilterOp Enum
+
+The `FilterOp` enum defines available filter operations:
+
+```rust
+pub enum FilterOp {
+    Eq(String),      // Exact match: column = $1
+    ILike(String),   // Case-insensitive pattern: column ILIKE $1
+}
+```
+
+Source: `~/workspace/source/src/repositories/listable.rs:1-4`
+
+<Note>
+  Additional operators can be added to `FilterOp` (e.g., `Gt`, `Lt`, `In`) to support more query types.
+</Note>
+
+## Associated Constants
+
+<ParamField path="TABLE" type="&'static str" required>
+  The database table name to query (e.g., `"cities"`)
+</ParamField>
+
+<ParamField path="COLUMNS" type="&'static [&'static str]" required>
+  Array of column names to SELECT
+</ParamField>
+
+## Required Methods
+
+### `filters`
+
+Returns a vector of filter conditions to apply to the query.
+
+**Returns:** `Vec<(&'static str, FilterOp)>` - Each tuple contains:
+- Column name
+- Filter operation with value
+
+**Example:**
+```rust
+fn filters(&self) -> Vec<(&'static str, FilterOp)> {
+    let mut v = Vec::new();
+    if let Some(name) = &self.name {
+        v.push(("name", FilterOp::ILike(name.clone())));
+    }
+    v
+}
+```
+
+### `page` (optional)
+
+Returns the requested page number (1-based).
+
+**Returns:** `Option<u32>` - Defaults to `None` (no pagination)
+
+### `per_page` (optional)
+
+Returns the number of results per page.
+
+**Returns:** `Option<u32>` - Defaults to `None` (no pagination)
+
+<Warning>
+  Both `page` and `per_page` must return `Some` for pagination to be applied.
+</Warning>
+
+## Example Implementation
+
+Here's the `CityResource` filter struct and its `Listable` implementation:
+
+```rust
+#[derive(Deserialize, Default)]
+pub struct CityResource {
+    pub name: Option<String>,
+    pub region: Option<String>,
+    pub page: Option<u32>,
+    pub per_page: Option<u32>,
+}
+```
+
+Source: `~/workspace/source/src/resources/city_resource.rs:3-9`
+
+```rust
+impl Listable for CityResource {
+    const TABLE: &'static str = "cities";
+    const COLUMNS: &'static [&'static str] = &["id", "name", "region"];
+
+    fn filters(&self) -> Vec<(&'static str, FilterOp)> {
+        let mut v = Vec::new();
+
+        if let Some(name) = &self.name {
+            v.push(("name", FilterOp::ILike(name.clone())));
+        }
+
+        if let Some(region) = &self.region {
+            v.push(("region", FilterOp::Eq(region.clone())));
+        }
+
+        v
+    }
+
+    fn page(&self) -> Option<u32> {
+        self.page
+    }
+
+    fn per_page(&self) -> Option<u32> {
+        self.per_page
+    }
+}
+```
+
+Source: `~/workspace/source/src/models/city.rs:17-42`
+
+## Usage with generic_list
+
+The `generic_list` function uses this trait to build dynamic queries:
+
+```rust
+pub async fn generic_list<T, F>(
+    filter: F,
+    order_by: Option<(&'static str, &'static str)>,
+    pool: &Pool<Postgres>,
+) -> Result<Vec<T>, Error>
+where
+    T: for<'r> FromRow<'r, PgRow> + Send + Unpin,
+    F: Listable,
+{
+    let columns = F::COLUMNS.join(", ");
+    let mut query = format!("SELECT {} FROM {}", columns, F::TABLE);
+
+    let filters = filter.filters();
+    let mut bind_index = 1;
+    let mut binds = Vec::new();
+
+    if !filters.is_empty() {
+        query.push_str(" WHERE ");
+
+        for (i, (col, op)) in filters.iter().enumerate() {
+            if i > 0 {
+                query.push_str(" AND ");
+            }
+
+            match op {
+                FilterOp::Eq(val) => {
+                    query.push_str(&format!("{} = ${}", col, bind_index));
+                    binds.push(val.clone());
+                }
+                FilterOp::ILike(val) => {
+                    query.push_str(&format!("{} ILIKE ${}", col, bind_index));
+                    binds.push(format!("%{}%", val));
+                }
+            }
+
+            bind_index += 1;
+        }
+    }
+
+    if let Some((col, dir)) = order_by {
+        let d = if dir.eq_ignore_ascii_case("DESC") {
+            "DESC"
+        } else {
+            "ASC"
+        };
+        query.push_str(&format!(" ORDER BY {} {}", col, d));
+    }
+
+    // PAGINACIÓN
+    if let (Some(page), Some(per_page)) = (filter.page(), filter.per_page()) {
+        let offset = (page.saturating_sub(1) * per_page) as i64;
+
+        query.push_str(&format!(
+            " LIMIT {} OFFSET {}",
+            per_page, offset
+        ));
+    }
+
+    let mut q = sqlx::query_as::<_, T>(&query).persistent(false);
+
+    for v in binds {
+        q = q.bind(v);
+    }
+
+    q.fetch_all(pool).await
+}
+```
+
+Source: `~/workspace/source/src/services/generic_query.rs:9-74`
+
+## Generated SQL Examples
+
+### No filters
+```sql
+SELECT id, name, region FROM cities ORDER BY id DESC
+```
+
+### Name filter (ILike)
+```sql
+SELECT id, name, region FROM cities WHERE name ILIKE $1 ORDER BY id DESC
+-- Binds: ["%San%"]
+```
+
+### Region filter (Eq)
+```sql
+SELECT id, name, region FROM cities WHERE region = $1 ORDER BY id DESC
+-- Binds: ["California"]
+```
+
+### Multiple filters
+```sql
+SELECT id, name, region FROM cities WHERE name ILIKE $1 AND region = $2 ORDER BY id DESC
+-- Binds: ["%San%", "California"]
+```
+
+### With pagination
+```sql
+SELECT id, name, region FROM cities ORDER BY id DESC LIMIT 10 OFFSET 0
+```
+
+## Controller Integration
+
+Using `Listable` in a controller:
+
+```rust
+pub async fn list_cities(
+    State(state): State<AppState>,
+    Query(filter): Query<CityResource>,
+) -> impl IntoResponse {
+    let result = generic_list::<City, CityResource>(
+        filter,
+        Some(("id", "DESC")),
+        &state.db
+    ).await;
+
+    match result {
+        Ok(data) => (
+            StatusCode::OK,
+            Json(json!({ "status": "success", "data": data })),
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "status": "error", "message": e.to_string() })),
+        ),
+    }
+}
+```
+
+Source: `~/workspace/source/src/controllers/city_controller.rs:14-30`
+
+## Benefits
+
+1. **Dynamic Queries** - Build SQL based on provided filters
+2. **Type Safety** - Filters are validated at compile time
+3. **No SQL Injection** - All values are bound as parameters
+4. **Flexible Filtering** - Add/remove filters without changing query logic
+5. **Built-in Pagination** - Consistent pagination across all resources
+
+## Extending FilterOp
+
+Add more operators to support advanced queries:
+
+```rust
+pub enum FilterOp {
+    Eq(String),
+    ILike(String),
+    Gt(String),           // Greater than
+    Lt(String),           // Less than
+    Gte(String),          // Greater than or equal
+    Lte(String),          // Less than or equal
+    In(Vec<String>),      // IN clause
+    Between(String, String), // BETWEEN clause
+}
+```
+
+Then update `generic_list` to handle new operators:
+
+```rust
+match op {
+    FilterOp::Eq(val) => {
+        query.push_str(&format!("{} = ${}", col, bind_index));
+        binds.push(val.clone());
+    }
+    FilterOp::Gt(val) => {
+        query.push_str(&format!("{} > ${}", col, bind_index));
+        binds.push(val.clone());
+    }
+    FilterOp::In(vals) => {
+        let placeholders = (0..vals.len())
+            .map(|i| format!("${}", bind_index + i))
+            .collect::<Vec<_>>()
+            .join(", ");
+        query.push_str(&format!("{} IN ({})", col, placeholders));
+        for v in vals {
+            binds.push(v.clone());
+            bind_index += 1;
+        }
+        bind_index -= 1; // Adjust for loop increment
+    }
+    // ...
+}
+```
+
+## Adding to New Resources
+
+To add list functionality to a new resource:
+
+1. Create a filter/resource struct with `#[derive(Deserialize, Default)]`
+2. Add optional fields for each filterable column
+3. Add optional `page` and `per_page` fields
+4. Implement `Listable` with table name, columns, and filter logic
+5. Use `generic_list::<Model, Resource>()` in your controller
+
+<Tip>
+  Use `Default` derive to allow creating empty filters: `Query(filter): Query<CityResource>` works even with no query parameters.
+</Tip>

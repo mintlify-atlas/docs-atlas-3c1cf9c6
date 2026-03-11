@@ -1,0 +1,251 @@
+---
+title: Architecture
+description: Understand the project structure and design patterns used in Template API Rust
+---
+
+Template API Rust follows a layered architecture pattern that separates concerns and promotes maintainability.
+
+## Project Structure
+
+The codebase is organized into logical modules:
+
+```
+src/
+├── main.rs                  # Application entry point
+├── app_state.rs             # Shared application state
+├── routes/
+│   └── api.rs              # Route definitions
+├── controllers/
+│   └── city_controller.rs  # Request handlers
+├── models/
+│   └── city.rs             # Data models with trait impls
+├── repositories/
+│   ├── insertable.rs       # Insert trait
+│   ├── updatable.rs        # Update trait
+│   ├── deletable.rs        # Delete trait
+│   └── listable.rs         # List/filter trait
+├── services/
+│   └── generic_query.rs    # Generic CRUD operations
+├── requests/
+│   └── request_city.rs     # Input validation structs
+└── resources/
+    └── city_resource.rs    # Query parameter structs
+```
+
+## Architecture Layers
+
+### 1. Application Entry Point
+
+The `main.rs` file bootstraps the application:
+
+```rust src/main.rs
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    dotenvy::dotenv().ok();
+
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::INFO)
+        .with_target(false)
+        .init();
+
+    // Database connection
+    let database_url = std::env::var("DATABASE_URL")
+        .expect("DATABASE_URL must be set");
+    let connect_options = database_url
+        .parse::<PgConnectOptions>()?
+        .statement_cache_capacity(0);
+
+    let pool = PgPoolOptions::new()
+        .max_connections(15)
+        .min_connections(5)
+        .idle_timeout(Duration::from_secs(300))
+        .acquire_timeout(Duration::from_secs(10))
+        .connect_with(connect_options)
+        .await?;
+
+    // Create app state
+    let app_state = AppState { db: pool };
+
+    // Build router
+    let app = Router::new().merge(routes::api::routes(app_state));
+
+    let listener = TcpListener::bind("0.0.0.0:3000").await?;
+    tracing::info!("Server listening on http://0.0.0.0:3000");
+    axum::serve(listener, app).await?;
+    Ok(())
+}
+```
+
+**Key responsibilities:**
+- Load environment variables
+- Initialize logging with `tracing`
+- Create database connection pool
+- Build and serve the Axum router
+
+### 2. Routes Layer
+
+Routes define the API endpoints and map them to controllers:
+
+```rust src/routes/api.rs
+use axum::{Router, routing::{delete, get, post, put}};
+use crate::controllers::city_controller::*;
+use crate::AppState;
+
+pub fn routes(state: AppState) -> Router {
+    Router::new()
+        .route("/cities", get(list_cities))
+        .route("/city", post(create_city))
+        .route("/city/:id", put(update_city))
+        .route("/city/:id", delete(delete_city))
+        .with_state(state)
+}
+```
+
+<Note>
+  Routes are type-safe and compile-time checked. Axum ensures that handler function signatures match the route parameters.
+</Note>
+
+### 3. Controllers Layer
+
+Controllers handle HTTP requests and responses:
+
+```rust src/controllers/city_controller.rs
+pub async fn list_cities(
+    State(state): State<AppState>,
+    Query(filter): Query<CityResource>,
+) -> impl IntoResponse {
+    let result = generic_list::<City, CityResource>(
+        filter, 
+        Some(("id", "DESC")), 
+        &state.db
+    ).await;
+
+    match result {
+        Ok(data) => (
+            StatusCode::OK,
+            Json(json!({ "status": "success", "data": data })),
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "status": "error", "message": e.to_string() })),
+        ),
+    }
+}
+```
+
+**Key responsibilities:**
+- Extract request data (path params, query strings, JSON bodies)
+- Call service layer functions
+- Format and return HTTP responses
+
+### 4. Models Layer
+
+Models represent database entities and implement repository traits:
+
+```rust src/models/city.rs
+#[derive(Debug, FromRow, serde::Serialize)]
+pub struct City {
+    pub id: i64,
+    pub name: String,
+    pub region: String
+}
+
+impl Insertable for City {
+    const TABLE: &'static str = "cities";
+    const COLUMNS: &'static [&'static str] = &["name", "region"];
+
+    fn bind<'q>(
+        self,
+        query: sqlx::query::QueryAs<'q, Postgres, Self, PgArguments>,
+    ) -> sqlx::query::QueryAs<'q, Postgres, Self, PgArguments> {
+        query.bind(self.name).bind(self.region)
+    }
+}
+```
+
+### 5. Services Layer
+
+Services contain reusable business logic:
+
+```rust src/services/generic_query.rs
+pub async fn generic_insert<T>(value: T, pool: &Pool<Postgres>) -> Result<T, Error>
+where
+    T: Insertable + for<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> + Send + Unpin,
+{
+    let columns = T::COLUMNS.join(", ");
+    let placeholders = (1..=T::COLUMNS.len())
+        .map(|i| format!("${}", i))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    let query = format!(
+        "INSERT INTO {} ({}) VALUES ({}) RETURNING *",
+        T::TABLE, columns, placeholders
+    );
+
+    let q = sqlx::query_as::<_, T>(&query);
+    let q = value.bind(q);
+    q.fetch_one(pool).await
+}
+```
+
+## Design Patterns
+
+### Generic Repository Pattern
+
+The project uses traits to define common database operations. Any model implementing these traits can use the generic service functions.
+
+<Card title="Repository Pattern Deep Dive" icon="book" href="/concepts/repository-pattern">
+  Learn more about the repository traits and how they work
+</Card>
+
+### Shared State Pattern
+
+The `AppState` struct holds the database pool and is shared across all handlers:
+
+```rust src/app_state.rs
+#[derive(Clone)]
+pub struct AppState {
+    pub db: PgPool
+}
+```
+
+<Tip>
+  Axum's `State` extractor provides type-safe access to shared application state in handlers.
+</Tip>
+
+### Async/Await with Tokio
+
+All I/O operations are asynchronous using Tokio runtime:
+
+- Database queries are non-blocking
+- HTTP handlers run concurrently
+- Connection pooling handles multiple simultaneous requests
+
+## Technology Stack
+
+<CardGroup cols={2}>
+  <Card title="Axum" icon="rocket">
+    Web framework built on Hyper with ergonomic routing and extractors
+  </Card>
+  <Card title="SQLx" icon="database">
+    Async, compile-time checked SQL queries with PostgreSQL support
+  </Card>
+  <Card title="Tokio" icon="bolt">
+    Async runtime with full feature support
+  </Card>
+  <Card title="Tracing" icon="chart-line">
+    Structured logging and diagnostics
+  </Card>
+</CardGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Repository Pattern" icon="database" href="/concepts/repository-pattern">
+    Deep dive into the generic repository traits
+  </Card>
+  <Card title="Database Connection" icon="plug" href="/concepts/database-connection">
+    Learn about connection pooling and configuration
+  </Card>
+</CardGroup>

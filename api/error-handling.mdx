@@ -1,0 +1,110 @@
+---
+title: 'Error Handling'
+description: 'Understanding error responses and HTTP status codes'
+---
+
+## Error Response Structure
+
+All error responses follow a consistent JSON format:
+
+```json
+{
+  "status": "error",
+  "message": "Detailed error description"
+}
+```
+
+<ResponseField name="status" type="string" required>
+  Always set to `"error"` for error responses
+</ResponseField>
+
+<ResponseField name="message" type="string" required>
+  Human-readable error description, typically includes database errors or validation messages
+</ResponseField>
+
+## HTTP Status Codes
+
+The API uses standard HTTP status codes to indicate the success or failure of requests:
+
+### Success Codes
+
+| Status Code | Description | Used By |
+|------------|-------------|----------|
+| `200 OK` | Request succeeded | GET /cities, PUT /city/:id, DELETE /city/:id |
+| `201 Created` | Resource created successfully | POST /city |
+
+### Error Codes
+
+| Status Code | Description | When It Occurs |
+|------------|-------------|----------------|
+| `404 Not Found` | Resource not found | DELETE /city/:id when city doesn't exist |
+| `500 Internal Server Error` | Server error | Database errors, constraint violations, connection issues |
+
+<Note>
+  Currently, the API returns 500 for most error conditions including validation errors and database constraint violations. Consider implementing more granular error handling for production use.
+</Note>
+
+## Common Error Scenarios
+
+### Database Constraint Violation
+
+Attempting to insert duplicate or invalid data:
+
+```json
+{
+  "status": "error",
+  "message": "error returned from database: duplicate key value violates unique constraint"
+}
+```
+
+**Status Code:** `500 Internal Server Error`
+
+### Resource Not Found
+
+Attempting to delete a city that doesn't exist:
+
+```json
+{
+  "status": "error",
+  "message": "no rows returned by a query that expected to return at least one row"
+}
+```
+
+**Status Code:** `404 Not Found`
+
+### Database Connection Error
+
+When the database is unavailable:
+
+```json
+{
+  "status": "error",
+  "message": "error communicating with database"
+}
+```
+
+**Status Code:** `500 Internal Server Error`
+
+### Invalid JSON
+
+Sending malformed JSON in request body:
+
+```json
+{
+  "status": "error",
+  "message": "Failed to deserialize the JSON body"
+}
+```
+
+**Status Code:** `500 Internal Server Error`
+
+<Tip>
+  The error messages come directly from SQLx and Axum, providing detailed technical information for debugging.
+</Tip>
+
+## Error Handling Best Practices
+
+1. **Check the status field** - Always check if `status` is `"success"` or `"error"`
+2. **Log error messages** - The `message` field contains valuable debugging information
+3. **Handle specific status codes** - Different status codes may require different user-facing messages
+4. **Implement retries** - For 500 errors, consider implementing exponential backoff retries
