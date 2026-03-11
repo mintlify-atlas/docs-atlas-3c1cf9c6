@@ -1,0 +1,87 @@
+{
+  "projectType": "api-service",
+  "projectName": "Template API Rust",
+  "projectDescription": "A minimalist and modern template for building high-performance RESTful APIs in Rust with Axum and PostgreSQL.",
+  "theme": "aspen",
+  "primaryColor": "#CE422B",
+  "lightColor": "#F74C00",
+  "darkColor": "#A0341F",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/architecture",
+              "concepts/repository-pattern",
+              "concepts/database-connection"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/environment-setup",
+              "guides/docker-deployment",
+              "guides/adding-resources",
+              "guides/filtering-pagination"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": [
+              "api/overview",
+              "api/error-handling"
+            ]
+          },
+          {
+            "group": "Endpoints",
+            "pages": [
+              "api/endpoints/cities"
+            ]
+          },
+          {
+            "group": "Traits",
+            "pages": [
+              "api/traits/insertable",
+              "api/traits/updatable",
+              "api/traits/deletable",
+              "api/traits/listable"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Axum web framework with async routing",
+    "PostgreSQL integration with SQLx",
+    "Generic repository pattern with CRUD traits",
+    "Built-in filtering and pagination",
+    "Docker support with multi-stage builds",
+    "Structured logging with tracing"
+  ],
+  "publicApiSurface": [
+    "GET /cities - List cities with filtering and pagination",
+    "POST /city - Create a new city",
+    "PUT /city/:id - Update an existing city",
+    "DELETE /city/:id - Delete a city",
+    "Insertable trait - Generic insert operations",
+    "Updatable trait - Generic update operations",
+    "Deletable trait - Generic delete operations",
+    "Listable trait - Generic list with filtering"
+  ]
+}
